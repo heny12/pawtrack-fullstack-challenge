@@ -9,7 +9,7 @@ export function petRoutes(app: FastifyInstance): void {
    */
   app.get('/api/pets', async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = (request as any).auth as AuthContext;
-    const pets = store.getPetsByTenant(auth.tenantId);
+    const pets = store.getPets(auth.tenantId);
     return reply.code(200).send({ data: pets });
   });
 
@@ -20,27 +20,12 @@ export function petRoutes(app: FastifyInstance): void {
   app.get('/api/pets/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = (request as any).auth as AuthContext;
     const { id } = request.params as { id: string };
-    const pet = store.getPet(id);
+    const pet = store.getPet(auth.tenantId, id);
 
     if (!pet) {
       return reply.code(404).send({ error: 'Pet not found' });
     }
 
-    // Note: this endpoint correctly checks tenant ownership
-    if (pet.tenantId !== auth.tenantId) {
-      return reply.code(404).send({ error: 'Pet not found' });
-    }
-
     return reply.code(200).send({ data: pet });
-  });
-
-  /**
-   * GET /api/sitters
-   * List all sitters for the authenticated tenant.
-   */
-  app.get('/api/sitters', async (request: FastifyRequest, reply: FastifyReply) => {
-    const auth = (request as any).auth as AuthContext;
-    const sitters = store.getSittersByTenant(auth.tenantId);
-    return reply.code(200).send({ data: sitters });
   });
 }

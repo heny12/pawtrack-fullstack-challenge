@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { authMiddleware } from './middleware/auth.js';
 import { bookingRoutes } from './routes/bookings.js';
 import { petRoutes } from './routes/pets.js';
+import { sitterRoutes } from './routes/sitters.js';
 
 const app = Fastify({ logger: true });
 
@@ -28,6 +29,7 @@ app.get('/health', async () => {
 // Register route handlers
 bookingRoutes(app);
 petRoutes(app);
+sitterRoutes(app);
 
 // Start server
 const start = async () => {

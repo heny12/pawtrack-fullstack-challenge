@@ -17,8 +17,8 @@ export function bookingRoutes(app: FastifyInstance): void {
       status?: string;
     };
 
-    // Support tenant override for admin views
-    const tenantId = query.tenantId || auth.tenantId;
+    // Support tenant override ONLY for admin role
+    const tenantId = (auth.role === 'admin' && query.tenantId) ? query.tenantId : auth.tenantId;
 
     const page = parseInt(query.page || '1', 10);
     const limit = parseInt(query.limit || '10', 10);
@@ -39,11 +39,12 @@ export function bookingRoutes(app: FastifyInstance): void {
    * Get a single booking by ID.
    */
   app.get('/api/bookings/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = (request as any).auth as AuthContext;
     const { id } = request.params as { id: string };
-    const booking = bookingService.getBooking(id);
+    const booking = bookingService.getBooking(auth.tenantId, id);
 
     if (!booking) {
-      return reply.code(200).send({ error: 'Booking not found' });
+      return reply.code(404).send({ error: 'Booking not found' });
     }
 
     return reply.code(200).send({ data: booking });
@@ -76,9 +77,10 @@ export function bookingRoutes(app: FastifyInstance): void {
         createdBy: auth.userId,
       });
 
-      return reply.code(200).send({ success: true, data: booking });
+      return reply.code(201).send({ success: true, data: booking });
     } catch (error: any) {
-      return reply.code(200).send({ success: false, error: error.message });
+      const status = error.message.includes('overlapping') ? 409 : 400;
+      return reply.code(status).send({ success: false, error: error.message });
     }
   });
 
@@ -91,7 +93,12 @@ export function bookingRoutes(app: FastifyInstance): void {
     const { id } = request.params as { id: string };
     const { status } = request.body as { status: BookingStatus };
 
-    const result = bookingService.updateStatus(id, status, auth.userId);
+    const result = bookingService.updateStatus(auth.tenantId, id, status, auth.userId);
+
+    if (!result.success) {
+      const statusCode = result.error === 'Booking not found' ? 404 : 400;
+      return reply.code(statusCode).send(result);
+    }
 
     return reply.code(200).send(result);
   });

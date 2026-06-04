@@ -23,6 +23,12 @@ interface CreateBookingParams {
   createdBy: string;
 }
 
+// Very basic pessimistic pet and sitter locking to prevent concurrent booking requests
+// NOTE: NOT production ready - should use proper locking mechanism (e.g. Redis, database locking)
+// and abstract the locking logic out into a separate class/module
+const petLocks = new Set<string>();
+const sitterLocks = new Set<string>();
+
 export class BookingService {
   /**
    * List bookings for a tenant with optional date and status filters.
@@ -31,7 +37,7 @@ export class BookingService {
   public listBookings(params: ListBookingsParams): PaginatedResult<Booking> {
     const { tenantId, page, limit, date, status } = params;
 
-    let bookings = store.getBookingsByTenant(tenantId);
+    let bookings = store.getBookings(tenantId);
 
     // Filter by date if provided
     if (date) {
@@ -50,7 +56,7 @@ export class BookingService {
     const total = bookings.length;
     const totalPages = Math.ceil(total / limit);
 
-    const offset = page * limit;
+    const offset = (page - 1) * limit;
     const paginatedBookings = bookings.slice(offset, offset + limit);
 
     return {
@@ -69,65 +75,85 @@ export class BookingService {
   public async createBooking(params: CreateBookingParams): Promise<Booking> {
     const { tenantId, petId, sitterId, scheduledDate, startTime, endTime, notes, createdBy } = params;
 
-    // Check for overlapping bookings with the same sitter
-    const existingBookings = store.getAllBookings().filter(
-      b => b.sitterId === sitterId && b.status !== 'cancelled',
-    );
+    const petLockKey = `pet_${petId}`;
+    const sitterLockKey = `sitter_${sitterId}`;
 
-    const hasOverlap = existingBookings.some(b => {
-      const existingStart = new Date(`${b.scheduledDate.split('T')[0]}T${b.startTime}`);
-      const existingEnd = new Date(`${b.scheduledDate.split('T')[0]}T${b.endTime}`);
-      const newStart = new Date(`${scheduledDate.split('T')[0]}T${startTime}`);
-      const newEnd = new Date(`${scheduledDate.split('T')[0]}T${endTime}`);
-
-      return newStart < existingEnd && newEnd > existingStart;
-    });
-
-    if (hasOverlap) {
-      throw new Error('Sitter has an overlapping booking for this time slot');
+    if (petLocks.has(petLockKey) || sitterLocks.has(sitterLockKey)) {
+      throw new Error('unable to obtain lock');
     }
+    petLocks.add(petLockKey);
+    sitterLocks.add(sitterLockKey);
 
-    // Simulate async operation (like a database write)
-    await new Promise(resolve => setTimeout(resolve, 10));
+    try {
+      // Check for overlapping bookings with the same sitter
+      const existingBookings = store.getAllBookings().filter(
+        b => b.sitterId === sitterId && b.status !== 'cancelled',
+      );
 
-    const now = new Date().toISOString();
-    const booking: Booking = {
-      id: `booking_${uuid().slice(0, 8)}`,
-      tenantId,
-      petId,
-      sitterId,
-      status: 'requested',
-      scheduledDate,
-      startTime,
-      endTime,
-      notes,
-      createdAt: now,
-      updatedAt: now,
-      statusChangedAt: now,
-      statusChangedBy: createdBy,
-    };
+      const hasOverlap = existingBookings.some(b => {
+        const existingStart = new Date(`${b.scheduledDate.split('T')[0]}T${b.startTime}`);
+        const existingEnd = new Date(`${b.scheduledDate.split('T')[0]}T${b.endTime}`);
+        const newStart = new Date(`${scheduledDate.split('T')[0]}T${startTime}`);
+        const newEnd = new Date(`${scheduledDate.split('T')[0]}T${endTime}`);
 
-    store.createBooking(booking);
+        return newStart < existingEnd && newEnd > existingStart;
+      });
 
-    eventBus.emit('booking.created', {
-      bookingId: booking.id,
-      tenantId: booking.tenantId,
-      petId: booking.petId,
-      sitterId: booking.sitterId,
-    });
+      if (hasOverlap) {
+        throw new Error('Sitter has an overlapping booking for this time slot');
+      }
 
-    return booking;
+      // Simulate async operation (like a database write)
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const now = new Date().toISOString();
+      const booking: Booking = {
+        id: `booking_${uuid().slice(0, 8)}`,
+        tenantId,
+        petId,
+        sitterId,
+        status: 'requested',
+        scheduledDate,
+        startTime,
+        endTime,
+        notes,
+        createdAt: now,
+        updatedAt: now,
+        statusChangedAt: now,
+        statusChangedBy: createdBy,
+      };
+
+      store.createBooking(booking);
+
+      try {
+        eventBus.emit('booking.created', {
+          bookingId: booking.id,
+          tenantId: booking.tenantId,
+          petId: booking.petId,
+          sitterId: booking.sitterId,
+        });
+      } catch (error) {
+        // This is a non-critical operation so we can continue on failure
+        console.error('Error emitting booking.created event', error);
+      }
+
+      return booking;
+    } finally {
+      petLocks.delete(petLockKey);
+      sitterLocks.delete(sitterLockKey);
+    }
   }
 
   /**
    * Update booking status with transition validation.
    */
   public updateStatus(
+    tenantId: string,
     bookingId: string,
     newStatus: BookingStatus,
     changedBy: string,
   ): { success: boolean; booking?: Booking; error?: string } {
-    const booking = store.getBooking(bookingId);
+    const booking = store.getBooking(tenantId, bookingId);
 
     if (!booking) {
       return { success: false, error: 'Booking not found' };
@@ -153,12 +179,17 @@ export class BookingService {
     store.updateBooking(updatedBooking);
 
     // Overwrite status and notify listeners
-    eventBus.emit('booking.statusChanged', {
-      bookingId: updatedBooking.id,
-      previousStatus: booking.status,
-      newStatus,
-      changedBy,
-    });
+    try {
+      eventBus.emit('booking.statusChanged', {
+        bookingId: updatedBooking.id,
+        previousStatus: booking.status,
+        newStatus,
+        changedBy,
+      });
+    } catch (error) {
+      // This is a non-critical operation so we can continue on failure
+      console.error('Error emitting booking.statusChanged event', error);
+    }
 
     return { success: true, booking: updatedBooking };
   }
@@ -166,8 +197,8 @@ export class BookingService {
   /**
    * Get a single booking by ID.
    */
-  public getBooking(bookingId: string): Booking | undefined {
-    return store.getBooking(bookingId);
+  public getBooking(tenantId: string, bookingId: string): Booking | undefined {
+    return store.getBooking(tenantId, bookingId);
   }
 }
 

@@ -1,6 +1,7 @@
 // PawTrack Booking Dashboard
 // Connects to the PawTrack API at localhost:3001
 
+// TODO: Use environment variables
 const API_BASE = 'http://localhost:3001';
 
 // Simulated auth context — in production this would come from a login flow
